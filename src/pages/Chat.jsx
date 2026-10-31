@@ -46,27 +46,8 @@ const Chat = () => {
   const [infoReadStatus, setInfoReadStatus] = useState(null);
   const [infoLoading, setInfoLoading] = useState(false);
 
-  const emojiPickerRef = useRef(null);
-  useEffect(() => {
-    if (!openEmojiMessageId) return;
-
-    const handleOutsideClick = (event) => {
-      if (
-        emojiPickerRef.current &&
-        !emojiPickerRef.current.contains(event.target)
-      ) {
-        setOpenEmojiMessageId(null);
-      }
-    };
-
-    document.addEventListener("mousedown", handleOutsideClick);
-    document.addEventListener("touchstart", handleOutsideClick);
-
-    return () => {
-      document.removeEventListener("mousedown", handleOutsideClick);
-      document.removeEventListener("touchstart", handleOutsideClick);
-    };
-  }, [openEmojiMessageId]);
+  // this state is make for sender receipt status
+  const [receiptByMessageId, setReceiptByMessageId] = useState([]);
 
   const processedMessageIds = useRef(new Set());
 
@@ -310,10 +291,12 @@ const Chat = () => {
 
     let active = true;
 
-    async function loadMessages() {
+    const loadMessages = async () => {
       const { data, error } = await supabase
         .from("messages")
-        .select("id, sender_id, content, created_at")
+        .select(
+          "id, conversation_id, sender_id, content, created_at, edited_at",
+        )
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: true });
 
@@ -323,11 +306,14 @@ const Chat = () => {
         setError(error.message);
         return;
       }
+      const loadedMessages = data ?? [];
 
-      setMessage(data ?? []);
-      await loadReactions(data ?? []);
-      await markMessagesAsDelivered(data ?? []);
-    }
+      setMessage(loadedMessages);
+      await loadReactions(loadedMessages);
+      await markMessagesAsDelivered(loadedMessages);
+      await loadMessageReceipts(loadedMessages);
+      await markMessageAsRead(loadedMessages);
+    };
 
     loadMessages();
 
@@ -342,35 +328,47 @@ const Chat = () => {
           table: "messages",
           filter: `conversation_id=eq.${conversationId}`,
         },
-        (payload) => {
+        async (payload) => {
           const eventType = payload.eventType;
 
           if (eventType === "INSERT") {
             const newMessage = payload.new;
 
+            // Incoming message ko delivered mark karein.
+            // if (newMessage.sender_id !== user.id) {
+            //   await markMessagesAsDelivered([newMessage]);
+            // }
+
+            if (!active) return;
+
             setMessage((previous) => {
               const alreadyExists = previous.some(
-                (message) => message.id === payload.new.id,
+                (item) => item.id === newMessage.id,
               );
-
               if (alreadyExists) return previous;
 
-              return [payload.new, ...previous].sort(
-                (a, b) => new Date(a.created_at) - new Date(b.created_at),
+              return [...previous, newMessage].sort(
+                (a, b) =>
+                  new Date(a.created_at).getTime() -
+                  new Date(b.created_at).getTime(),
               );
-              return [...previous, newMessage];
             });
+            if (newMessage.sender_id !== user.id) {
+              await markMessagesAsDelivered([newMessage]);
+              await markMessageAsRead([newMessage]);
+            }
           }
+
           if (eventType === "UPDATE") {
             const updateMessage = payload.new;
 
-            setMessage((previous) => {
+            setMessage((previous) =>
               previous.map((message) =>
                 message.id === updateMessage.id
                   ? { ...message, ...updateMessage }
                   : message,
-              );
-            });
+              ),
+            );
           }
           if (eventType === "DELETE") {
             const deleteMessageId = payload.old?.id;
@@ -379,10 +377,16 @@ const Chat = () => {
             setMessage((previous) =>
               previous.filter((message) => message.id !== deleteMessageId),
             );
-            setReactionLoadingId((previous) => {
-              const upload = { ...previous };
-              delete update[deleteMessageId];
-              return upload;
+            // setReactionLoadingId((previous) => {
+            //   const upload = { ...previous };
+            //   delete update[deleteMessageId];
+            //   return upload;
+            // });
+
+            setReactionsByMessageId((previous) => {
+              const updated = { ...previous };
+              delete updated[deleteMessageId];
+              return updated;
             });
           }
         },
@@ -445,11 +449,73 @@ const Chat = () => {
     };
   }, [user, conversationContactMap, conversationId]);
 
+  useEffect(() => {
+    if (!user?.id || !conversationId) return;
+
+    const channel = supabase
+      .channel(`receipts-${conversationId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "message_receipts",
+        },
+        async (payload) => {
+          const changedMessageId =
+            payload.new?.message_id || payload.old?.message_id;
+
+          if (!changedMessageId) return;
+
+          const currentMessages = messagesRef.current;
+
+          const isCurrentConversationMessage = currentMessages.some(
+            (msg) => msg.id === changedMessageId,
+          );
+
+          if (isCurrentConversationMessage) {
+            await loadMessageReceipts(currentMessages);
+          }
+        },
+      )
+      // .subscribe();
+      .subscribe((status) => {
+        console.log("Reactions Realtime:", status);
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user?.id, conversationId]);
+
   const messagesRef = useRef([]);
 
   useEffect(() => {
     messagesRef.current = message;
   }, [message]);
+
+  const emojiPickerRef = useRef(null);
+
+  useEffect(() => {
+    if (!openEmojiMessageId) return;
+
+    const handleOutsideClick = (event) => {
+      if (
+        emojiPickerRef.current &&
+        !emojiPickerRef.current.contains(event.target)
+      ) {
+        setOpenEmojiMessageId(null);
+      }
+    };
+
+    document.addEventListener("mousedown", handleOutsideClick);
+    document.addEventListener("touchstart", handleOutsideClick);
+
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+      document.removeEventListener("touchstart", handleOutsideClick);
+    };
+  }, [openEmojiMessageId]);
 
   useEffect(() => {
     if (!user || !conversationId) return;
@@ -476,7 +542,11 @@ const Chat = () => {
           }
         },
       )
-      .subscribe();
+      // .subscribe();
+
+      .subscribe((status) => {
+        console.log("Reactions Realtime:", status);
+      });
 
     return () => {
       supabase.removeChannel(channel);
@@ -548,10 +618,11 @@ const Chat = () => {
   };
 
   const markConversationAsRead = async (conversationId, contactId) => {
-    if (!user || !conversationId) return;
+    if (!user?.id || !conversationId) return;
 
     const readAt = new Date().toISOString();
 
+    // 1. Conversation ko read mark karo
     const { error } = await supabase.from("conversation_reads").upsert(
       {
         conversation_id: conversationId,
@@ -568,7 +639,38 @@ const Chat = () => {
       return;
     }
 
-    // Unread count ko zero karo.
+    // 2. Is conversation ke incoming messages fetch karo
+    const { data: incomingMessages, error: messagesError } = await supabase
+      .from("messages")
+      .select("id, sender_id")
+      .eq("conversation_id", conversationId)
+      .neq("sender_id", user.id);
+
+    if (messagesError) {
+      console.error(
+        "Could not fetch incoming messages:",
+        messagesError.message,
+      );
+      return;
+    }
+
+    // 3. Incoming messages ko read mark karo
+    if (incomingMessages?.length > 0) {
+      const { error: receiptError } = await supabase.rpc(
+        "mark_message_receipts",
+        {
+          p_message_ids: incomingMessages.map((msg) => msg.id),
+          p_read: true,
+        },
+      );
+
+      if (receiptError) {
+        console.error("Read receipts update failed:", receiptError.message);
+        return;
+      }
+    }
+
+    // 4. Sidebar unread count zero karo
     if (contactId) {
       setUnreadByContactId((previous) => ({
         ...previous,
@@ -577,13 +679,26 @@ const Chat = () => {
     }
   };
 
-  async function loadReactions(messageList) {
-    if (!messageList || messageList.length === 0) {
+  const loadReactions = async (messageList) => {
+    // if (!messageList || messageList.length === 0) {
+    //   setReactionsByMessageId({});
+    //   return;
+    // }
+
+    if (!Array.isArray(messageList) || messageList.length === 0) {
       setReactionsByMessageId({});
       return;
     }
 
-    const messageIds = messageList.map((msg) => msg.id);
+    // const messageIds = messageList.map((msg) => msg.id);
+    const messageIds = messageList
+      .filter((msg) => msg?.id)
+      .map((msg) => msg.id);
+
+    if (messageIds.length === 0) {
+      setReactionsByMessageId({});
+      return;
+    }
 
     const { data, error } = await supabase
       .from("message_reactions")
@@ -606,7 +721,7 @@ const Chat = () => {
     }
 
     setReactionsByMessageId(grouped);
-  }
+  };
 
   const toggleReaction = async (messageId, emoji) => {
     if (!user?.id || !messageId || !emoji) return;
@@ -666,7 +781,7 @@ const Chat = () => {
       }
 
       // UI ko database ke latest reactions ke saath refresh karo
-      await loadReactions(message);
+      await loadReactions(messagesRef.current);
     } catch (err) {
       console.error("Reaction failed:", err);
       setError(err.message || "Reaction update nahi ho saka.");
@@ -746,7 +861,17 @@ const Chat = () => {
   };
 
   const openMessageInfo = async (message) => {
-    if (!user || message.sender_id !== user.id) return;
+    // if (!user || message.sender_id !== user.id) return;
+    if (
+      !user?.id ||
+      !message?.id ||
+      !message?.conversation_id ||
+      !message?.sender_id ||
+      message.sender_id !== user.id
+    ) {
+      console.error("Invalid message passed to Message Info:", message);
+      return;
+    }
 
     setInfoMessage(message);
     setInfoReadStatus(null);
@@ -766,31 +891,49 @@ const Chat = () => {
           ? conversation.user2_id
           : conversation.user1_id;
 
-      const { data: readStatus, error: readError } = await supabase
-        .from("conversation_reads")
-        .select("last_read_at")
-        .eq("conversation_id", message.conversation_id)
+      // const { data: readStatus, error: readError } = await supabase
+      //   .from("conversation_reads")
+      //   .select("last_read_at")
+      //   .eq("conversation_id", message.conversation_id)
+      //   .eq("user_id", otherUserId)
+      //   .maybeSingle();
+
+      // if (readError) throw readError;
+
+      // const readAt = readStatus?.last_read_at
+      //   ? new Date(readStatus.last_read_at).getTime()
+      //   : null;
+
+      // const messageTime = new Date(message.created_at).getTime();
+
+      // setInfoReadStatus({
+      //   read: readAt !== null && readAt >= messageTime,
+      //   lastReadAt: readStatus?.last_read_at ?? null,
+      // });
+      const { data: receipt, error: receiptError } = await supabase
+        .from("message_receipts")
+        .select("delivered_at, read_at")
+        .eq("message_id", message.id)
         .eq("user_id", otherUserId)
         .maybeSingle();
-      if (readError) throw error;
-      const readAt = readStatus?.last_read_at
-        ? new Date(message.created_at).getTime()
-        : null;
 
-      const messageTime = new Date(message.created_at).getTime();
+      if (receiptError) throw receiptError;
 
       setInfoReadStatus({
-        read: readAt !== null && readAt >= messageTime,
-        lastReadAt: readStatus?.last_read_at ?? null,
+        read: Boolean(receipt?.read_at),
+        lastReadAt: receipt?.read_at ?? null,
+        delivered: Boolean(receipt?.delivered_at),
+        deliveredAt: receipt?.delivered_at ?? null,
       });
     } catch (error) {
+      console.error("Message info error :", error);
       setError(error.message);
     } finally {
       setInfoLoading(false);
     }
   };
 
-  const markMessageAsDelivered = async (incomingMessages) => {
+  const markMessagesAsDelivered = async (incomingMessages) => {
     if (!user || !incomingMessages?.length) return;
     const incoming = incomingMessages.filter(
       (message) => message.sender_id !== user.id,
@@ -808,6 +951,95 @@ const Chat = () => {
     });
     if (error) {
       console.error("Delivery receipts failed:", error.message);
+    }
+  };
+
+  const loadMessageReceipts = async (messageList) => {
+    if (!messageList?.length) {
+      setReceiptByMessageId({});
+      return;
+    }
+    const messageIds = messageList
+      .filter(
+        (msg) =>
+          msg?.sender_id === user.id &&
+          typeof msg.id === "string" &&
+          msg.id.trim() !== "",
+      )
+      .map((msg) => msg.id);
+
+    if (messageIds.length === 0) {
+      setReceiptByMessageId({});
+      return;
+    }
+    const { data, error } = await supabase
+      .from("message_receipts")
+      .select("message_id, delivered_at, read_at")
+      .in("message_id", messageIds);
+
+    if (error) {
+      console.error("Could not load message receipts", error.message);
+      return;
+    }
+    const grouped = {};
+    for (const receipt of data ?? []) {
+      grouped[receipt.message_id] = receipt;
+    }
+    setReceiptByMessageId(grouped);
+  };
+
+  // const markMessageAsRead = async (incomingMessages) => {
+  //   if (!user?.id || !incomingMessages?.length) return;
+
+  //   const messageIds = incomingMessages
+  //     .filter((msg) => msg.sender_id !== user.id)
+  //     .map((msg) => msg.id);
+
+  //   const validMessageIds = messageIds.filter(
+  //     (id) => typeof id === "string" && id.length > 0,
+  //   );
+
+  //   if (validMessageIds.length === 0) return;
+
+  //   if (messageIds.length === 0) return;
+
+  //   console.log("Current user ID:", user.id);
+  //   console.log("Message IDs:", messageIds);
+
+  //   const { error } = await supabase.rpc("mark_message_receipts", {
+  //     p_message_ids: messageIds,
+  //     p_read: true,
+  //   });
+
+  //   if (error) {
+  //     console.error("Read receipt error:", error.message);
+  //   }
+  // };
+
+  const markMessageAsRead = async (incomingMessages) => {
+    if (!user?.id || !Array.isArray(incomingMessages)) return;
+
+    const validMessageIds = incomingMessages
+      .filter(
+        (msg) =>
+          msg?.sender_id &&
+          msg.sender_id !== user.id &&
+          typeof msg.id === "string" &&
+          msg.id.trim() !== "",
+      )
+      .map((msg) => msg.id);
+
+    if (validMessageIds.length === 0) return;
+
+    console.log("Read receipt message IDs:", validMessageIds);
+
+    const { error } = await supabase.rpc("mark_message_receipts", {
+      p_message_ids: validMessageIds,
+      p_read: true,
+    });
+
+    if (error) {
+      console.error("Read receipt error:", error.message);
     }
   };
 
@@ -838,9 +1070,28 @@ const Chat = () => {
 
         <h3>Contacts</h3>
         {loading && (
-          <p style={{ textAlign: "center" }}>
-            <RiLoader2Fill className="contact-loader" />
-          </p>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "row",
+              alignItems: "center,",
+              justifyContent: "center",
+            }}
+          >
+            <p
+              style={{
+                marginTop: "22px",
+                fontSize: "22px",
+                fontWeight: "bold",
+                color: "#17a372",
+              }}
+            >
+              Talk Shak
+            </p>
+            <p style={{ textAlign: "center" }}>
+              <RiLoader2Fill className="contact-loader" />
+            </p>
+          </div>
         )}
 
         {!loading && profile.length === 0 && (
@@ -1005,20 +1256,36 @@ const Chat = () => {
                     ) : (
                       <p>{msg.content}</p>
                     )}
-
                     <small>
                       {new Date(msg.created_at).toLocaleTimeString([], {
                         hour: "2-digit",
                         minute: "2-digit",
                       })}
                     </small>
+                    {msg.sender_id === user.id && (
+                      <small className="message-status">
+                        {(() => {
+                          const receipt = receiptByMessageId[msg.id];
+
+                          if (receipt?.read_at) {
+                            return "✓✓ Read";
+                          }
+
+                          if (receipt?.delivered_at) {
+                            return "✓✓ Delivered";
+                          }
+
+                          return "✓ Sent";
+                        })()}
+                      </small>
+                    )}
 
                     {msg.edited_at && (
                       <small className="edited-label">Edited</small>
                     )}
                   </div>
 
-                  {msg.sender_id === user.id && (
+                  {message.sender_id === user.id && (
                     <div className="message-actions">
                       <button
                         type="button"
@@ -1043,9 +1310,14 @@ const Chat = () => {
                     <button
                       type="button"
                       className="message-info-button"
-                      onClick={() => openMessageInfo(msg)}
-                      aria-label="View message information"
-                      title="Message info"
+                      // onClick={() => openMessageInfo(msg)}
+                      // aria-label="View message information"
+                      // title="Message info"
+                      onClick={() => {
+                        console.log("Message Info clicked:", msg);
+                        console.log("Conversation ID:", msg?.conversation_id);
+                        openMessageInfo(msg);
+                      }}
                     >
                       <AiFillInfoCircle />
                     </button>

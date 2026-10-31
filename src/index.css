@@ -1298,6 +1298,14 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.message-status {
+  display: block;
+  margin-top: 4px;
+  text-align: right;
+  font-size: 10px;
+  color: #738078;
+}
+
 /* Mobile responsive */
 @media (max-width: 650px) {
   .message-item {
