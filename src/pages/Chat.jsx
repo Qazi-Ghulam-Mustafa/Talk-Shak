@@ -767,17 +767,35 @@ const Chat = () => {
             "Reaction update nahi hua. Supabase UPDATE RLS policy check karein.",
           );
         }
+        // } else {
+        //   // Pehli baar reaction add hoga
+        //   const { error: insertError } = await supabase
+        //     .from("message_reactions")
+        //     .insert({
+        //       message_id: messageId,
+        //       user_id: user.id,
+        //       emoji,
+        //     });
+
+        //   if (insertError) throw insertError;
+        // }
       } else {
         // Pehli baar reaction add hoga
-        const { error: insertError } = await supabase
+        const { data: inserted, error: insertError } = await supabase
           .from("message_reactions")
           .insert({
             message_id: messageId,
             user_id: user.id,
             emoji,
-          });
+          })
+          .select("id, message_id, user_id, emoji")
+          .single();
 
         if (insertError) throw insertError;
+
+        if (!inserted) {
+          throw new Error("Reaction insert nahi hua.");
+        }
       }
 
       // UI ko database ke latest reactions ke saath refresh karo
@@ -804,12 +822,19 @@ const Chat = () => {
     try {
       const { data, error } = await supabase
         .from("messages")
-        .update({ content, edited_at: new Date().toISOString() })
-        .eq("id", messageId)
+        // .update({ content, edited_at: new Date().toISOString() })
+        .update({
+          content: editContent.trim(),
+          edited_at: new Date().toISOString(),
+        })
+        // .eq("id", messageId)
+        // .eq("sender_id", user.id)
+        // .select("id, conversation_id, sender_id, content, created_at")
+        // .single();
+        .eq("id", editingMessageId)
         .eq("sender_id", user.id)
-        .select("id, conversation_id, sender_id, content, created_at")
+        .select()
         .single();
-
       if (error) throw error;
 
       setMessage((previous) =>
@@ -1285,7 +1310,7 @@ const Chat = () => {
                     )}
                   </div>
 
-                  {message.sender_id === user.id && (
+                  {msg.sender_id === user.id && (
                     <div className="message-actions">
                       <button
                         type="button"
