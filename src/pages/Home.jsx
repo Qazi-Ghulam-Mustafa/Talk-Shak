@@ -92,7 +92,7 @@ const HomePage=()=> {
             </div>
 
             <div className="message received">
-              Just checking in 😊
+              Just checking in
             </div>
           </div>
 

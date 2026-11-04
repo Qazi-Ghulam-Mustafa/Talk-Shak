@@ -47,7 +47,7 @@ const Chat = () => {
   const [infoLoading, setInfoLoading] = useState(false);
 
   // this state is make for sender receipt status
-  const [receiptByMessageId, setReceiptByMessageId] = useState([]);
+  const [receiptByMessageId, setReceiptByMessageId] = useState({});
 
   const processedMessageIds = useRef(new Set());
 
@@ -286,6 +286,122 @@ const Chat = () => {
   };
 
   // Load messages and subscribe to new messages
+  // useEffect(() => {
+  //   if (!conversationId) return;
+
+  //   let active = true;
+
+  //   const loadMessages = async () => {
+  //     const { data, error } = await supabase
+  //       .from("messages")
+  //       .select(
+  //         "id, conversation_id, sender_id, content, created_at, edited_at",
+  //       )
+  //       .eq("conversation_id", conversationId)
+  //       .order("created_at", { ascending: true });
+
+  //     if (!active) return;
+
+  //     if (error) {
+  //       setError(error.message);
+  //       return;
+  //     }
+  //     const loadedMessages = data ?? [];
+
+  //     setMessage(loadedMessages);
+  //     await loadReactions(loadedMessages);
+  //     await markMessagesAsDelivered(loadedMessages);
+  //     await loadMessageReceipts(loadedMessages);
+  //     await markMessageAsRead(loadedMessages);
+  //   };
+
+  //   loadMessages();
+
+  //   const channel = supabase
+  //     .channel(`conversation-${conversationId}`)
+  //     .on(
+  //       "postgres_changes",
+  //       {
+  //         // event: "INSERT",
+  //         event: "*",
+  //         schema: "public",
+  //         table: "messages",
+  //         filter: `conversation_id=eq.${conversationId}`,
+  //       },
+  //       async (payload) => {
+  //         const eventType = payload.eventType;
+
+  //         if (eventType === "INSERT") {
+  //           const newMessage = payload.new;
+
+  //           // Incoming message ko delivered mark karein.
+  //           // if (newMessage.sender_id !== user.id) {
+  //           //   await markMessagesAsDelivered([newMessage]);
+  //           // }
+
+  //           if (!active) return;
+
+  //           setMessage((previous) => {
+  //             const alreadyExists = previous.some(
+  //               (item) => item.id === newMessage.id,
+  //             );
+  //             if (alreadyExists) return previous;
+
+  //             return [...previous, newMessage].sort(
+  //               (a, b) =>
+  //                 new Date(a.created_at).getTime() -
+  //                 new Date(b.created_at).getTime(),
+  //             );
+  //           });
+  //           if (newMessage.sender_id !== user.id) {
+  //             await markMessagesAsDelivered([newMessage]);
+  //             await markMessageAsRead([newMessage]);
+  //           }
+  //         }
+
+  //         if (eventType === "UPDATE") {
+  //           const updateMessage = payload.new;
+
+  //           setMessage((previous) =>
+  //             previous.map((message) =>
+  //               message.id === updateMessage.id
+  //                 ? { ...message, ...updateMessage }
+  //                 : message,
+  //             ),
+  //           );
+  //         }
+  //         if (eventType === "DELETE") {
+  //           const deleteMessageId = payload.old?.id;
+  //           if (!deleteMessageId) return;
+
+  //           setMessage((previous) =>
+  //             previous.filter((message) => message.id !== deleteMessageId),
+  //           );
+  //           // setReactionLoadingId((previous) => {
+  //           //   const upload = { ...previous };
+  //           //   delete update[deleteMessageId];
+  //           //   return upload;
+  //           // });
+
+  //           setReactionsByMessageId((previous) => {
+  //             const updated = { ...previous };
+  //             delete updated[deleteMessageId];
+  //             return updated;
+  //           });
+  //         }
+  //       },
+  //     )
+  //     // .subscribe();
+  //     .subscribe((status) => {
+  //       console.log("Message Realtime status : ", status);
+  //     });
+
+  //   return () => {
+  //     active = false;
+  //     supabase.removeChannel(channel);
+  //   };
+  // }, [conversationId]);
+
   useEffect(() => {
     if (!conversationId) return;
 
@@ -306,6 +422,7 @@ const Chat = () => {
         setError(error.message);
         return;
       }
+
       const loadedMessages = data ?? [];
 
       setMessage(loadedMessages);
@@ -319,10 +436,11 @@ const Chat = () => {
 
     const channel = supabase
       .channel(`conversation-${conversationId}`)
+
+      // INSERT and UPDATE listener
       .on(
         "postgres_changes",
         {
-          // event: "INSERT",
           event: "*",
           schema: "public",
           table: "messages",
@@ -331,20 +449,16 @@ const Chat = () => {
         async (payload) => {
           const eventType = payload.eventType;
 
+          if (!active) return;
+
           if (eventType === "INSERT") {
             const newMessage = payload.new;
-
-            // Incoming message ko delivered mark karein.
-            // if (newMessage.sender_id !== user.id) {
-            //   await markMessagesAsDelivered([newMessage]);
-            // }
-
-            if (!active) return;
 
             setMessage((previous) => {
               const alreadyExists = previous.some(
                 (item) => item.id === newMessage.id,
               );
+
               if (alreadyExists) return previous;
 
               return [...previous, newMessage].sort(
@@ -353,7 +467,8 @@ const Chat = () => {
                   new Date(b.created_at).getTime(),
               );
             });
-            if (newMessage.sender_id !== user.id) {
+
+            if (newMessage.sender_id !== user?.id) {
               await markMessagesAsDelivered([newMessage]);
               await markMessageAsRead([newMessage]);
             }
@@ -370,30 +485,51 @@ const Chat = () => {
               ),
             );
           }
-          if (eventType === "DELETE") {
-            const deleteMessageId = payload.old?.id;
-            if (!deleteMessageId) return;
-
-            setMessage((previous) =>
-              previous.filter((message) => message.id !== deleteMessageId),
-            );
-            // setReactionLoadingId((previous) => {
-            //   const upload = { ...previous };
-            //   delete update[deleteMessageId];
-            //   return upload;
-            // });
-
-            setReactionsByMessageId((previous) => {
-              const updated = { ...previous };
-              delete updated[deleteMessageId];
-              return updated;
-            });
-          }
         },
       )
-      // .subscribe();
+
+      // Separate DELETE listener
+      .on(
+        "postgres_changes",
+        {
+          event: "DELETE",
+          schema: "public",
+          table: "messages",
+        },
+        (payload) => {
+          console.log("MESSAGE DELETE EVENT:", payload);
+
+          if (!active) return;
+
+          // const deletedMessage = payload.old?.id;
+
+          // if (deletedMessage?.conversation_id !== conversationId) return;
+
+          // const deletedMessageId = deletedMessage.id;
+
+          const deletedMessageId = payload.old?.id;
+          if (!deletedMessageId) return;
+
+          const messageExists = messagesRef.current.some(
+            (msg) => msg.id === deletedMessageId,
+          );
+
+          if (!messageExists) return;
+
+          setMessage((previous) =>
+            previous.filter((msg) => msg.id !== deletedMessageId),
+          );
+
+          setReactionsByMessageId((previous) => {
+            const updated = { ...previous };
+            delete updated[deletedMessageId];
+            return updated;
+          });
+        },
+      )
+
       .subscribe((status) => {
-        console.log("Message Realtime status : ", status);
+        console.log("Message Realtime status:", status);
       });
 
     return () => {
@@ -480,7 +616,7 @@ const Chat = () => {
       )
       // .subscribe();
       .subscribe((status) => {
-        console.log("Reactions Realtime:", status);
+        console.log("Receipts Realtime:", status);
       });
 
     return () => {
@@ -850,7 +986,7 @@ const Chat = () => {
   };
 
   const handleDeleteMessage = async (messageId) => {
-    if (messageActionLoading) {
+    if (messageActionLoading || !user?.id || !messageId) {
       return;
     }
 
@@ -858,17 +994,24 @@ const Chat = () => {
       "Are you sure, you want to delete this message ?",
     );
     if (!confirmed) return;
-    setConversationContactMap(false);
+    setMessageActionLoading(true);
+    // setConversationContactMap(false);
     setError("");
 
     try {
-      const { error } = await supabase
+      const { data: deletedMessage, error } = await supabase
         .from("messages")
         .delete()
         .eq("id", messageId)
-        .eq("sender_id", user.id);
+        .eq("sender_id", user.id)
+        .select("id")
+        .maybeSingle();
 
       if (error) throw error;
+
+      if (!deletedMessage) {
+        throw new Error("Message doesn't Delete. Server Error 404");
+      }
 
       setMessage((previous) =>
         previous.filter((message) => message.id !== messageId),
@@ -980,8 +1123,11 @@ const Chat = () => {
   };
 
   const loadMessageReceipts = async (messageList) => {
+    // if (!messageList?.length) {
+    //   setReceiptByMessageId({});
+    //   return;
+    // }
     if (!messageList?.length) {
-      setReceiptByMessageId({});
       return;
     }
     const messageIds = messageList
@@ -993,14 +1139,18 @@ const Chat = () => {
       )
       .map((msg) => msg.id);
 
+    // if (messageIds.length === 0) {
+    //   setReceiptByMessageId({});
+    //   return;
+    // }
     if (messageIds.length === 0) {
-      setReceiptByMessageId({});
       return;
     }
     const { data, error } = await supabase
       .from("message_receipts")
-      .select("message_id, delivered_at, read_at")
-      .in("message_id", messageIds);
+      .select("message_id, user_id, delivered_at, read_at")
+      .in("message_id", messageIds)
+      .eq("user_id", selectedUser.id);
 
     if (error) {
       console.error("Could not load message receipts", error.message);
@@ -1011,6 +1161,23 @@ const Chat = () => {
       grouped[receipt.message_id] = receipt;
     }
     setReceiptByMessageId(grouped);
+    // setReceiptByMessageId((previous) => {
+    //   const updated = { ...previous };
+
+    //   for (const [messageId, newReceipt] of Object.entries(grouped)) {
+    //     const oldReceipt = previous[messageId] || {};
+
+    //     updated[messageId] = {
+    //       ...oldReceipt,
+    //       ...newReceipt,
+    //       delivered_at:
+    //         oldReceipt.delivered_at || newReceipt.delivered_at || null,
+    //       read_at: oldReceipt.read_at || newReceipt.read_at || null,
+    //     };
+    //   }
+
+    //   return updated;
+    // });
   };
 
   // const markMessageAsRead = async (incomingMessages) => {
